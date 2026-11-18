@@ -52,7 +52,7 @@ glass behind it. That's expected.
 ### 2. Wallpaper and DockGlass (script)
 
 ```powershell
-git clone https://github.com/<you>/glass-desktop
+git clone https://github.com/Leonxlnx/glass-desktop
 cd glass-desktop
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
