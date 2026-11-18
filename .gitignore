@@ -1,0 +1,14 @@
+# Build output
+dockglass/DockGlass.exe
+*.exe
+*.pdb
+
+# Written at runtime by DockGlass
+geometry.js
+geometry.js.tmp
+
+# Local only (PRO Threads reference overlay)
+reference.webp
+
+node_modules/
+*.zip

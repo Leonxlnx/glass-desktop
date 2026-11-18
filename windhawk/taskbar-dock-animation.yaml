@@ -1,0 +1,15 @@
+# Windhawk mod: Taskbar Dock Animation (taskbar-dock-animation) by Ph0en1x-dev, tested with v1.9.2
+# Paste into the mod's Advanced tab > Mod settings, then Save.
+
+AnimationType: 0
+MaxScale: 115
+EffectRadius: 110
+SpacingFactor: 0
+BounceDelay: 2147483647
+FocusDuration: 180
+MirrorForTopTaskbar: 0
+DisableVerticalBounce: 1
+TaskbarLabelsMode: 0
+ExcludeSystemButtonsMode: 0
+LerpSpeed: 25
+DisableBounce: 1

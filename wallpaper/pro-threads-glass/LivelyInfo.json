@@ -1,0 +1,14 @@
+{
+  "AppVersion": "2.2.1.0",
+  "Title": "PRO Threads Glass",
+  "Thumbnail": "thumbnail.jpg",
+  "Preview": null,
+  "Desc": "PRO Threads by kubai087 (MIT), with a Liquid Glass dock drawn into the wallpaper.",
+  "Author": "kubai087, glass-desktop contributors",
+  "License": "MIT",
+  "Contact": "https://github.com/kubai087/pro-threads",
+  "Type": 1,
+  "FileName": "index.html",
+  "Arguments": null,
+  "IsAbsolutePath": false
+}

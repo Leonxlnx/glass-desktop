@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+# build-glass.mjs matches exact bytes, so keep the wallpaper files as they are
+wallpaper/** -text
+*.png binary
+*.jpg binary

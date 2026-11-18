@@ -1,0 +1,2030 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRO Threads</title>
+<style>
+:root {
+  --panel-w: 300px;
+  --backdrop: #000000;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000000;
+}
+
+body[data-ui="off"] { --panel-w: 0px; }
+
+/* Embedded, the backdrop fills the box round the stage too. */
+body[data-embed] .view { background: var(--backdrop); }
+
+/* Without WebGL 2 (webgl.js), a still of the wallpaper in its place. */
+body[data-fallback] #wall { visibility: hidden; }
+body[data-fallback] .stage { background: #000 url("media/pro.jpg") center / cover no-repeat; }
+
+/* The space left of the panel; the stage is fitted into it. */
+.view {
+  position: fixed;
+  inset: 0 var(--panel-w) 0 0;
+  display: grid;
+  place-items: center;
+  container-type: size;
+  background: #0b0c0e;
+}
+
+/* The chosen proportions (--ratio, width over height), as large as fits. */
+.stage {
+  --ratio: 1.5468;
+  position: relative;
+  width: min(100cqw, calc(100cqh * var(--ratio)));
+  aspect-ratio: var(--ratio);
+  background: var(--backdrop);
+}
+
+#wall {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The original, laid over the canvas for comparison (R toggles it). */
+.reference {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+body[data-reference] .reference { opacity: 1; z-index: 1; }
+
+/* The settings, docked on the right. */
+.sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--panel-w);
+  box-sizing: border-box;
+  padding: 12px;
+  overflow-y: auto;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: #111215;
+  scrollbar-width: thin;
+  /* Keep room for the scrollbar, so folding the panel doesn't change its width. */
+  scrollbar-gutter: stable;
+}
+
+body[data-ui="off"] .sidebar { display: none; }
+
+/* Tweakpane, a little roomier and in the wallpaper's greys. */
+.sidebar .tp-rotv {
+  --tp-base-background-color: #1a1c21;
+  --tp-container-background-color: rgba(255, 255, 255, 0.06);
+  --tp-input-background-color: rgba(255, 255, 255, 0.07);
+  --tp-label-foreground-color: #a8aebb;
+  --tp-monitor-background-color: rgba(0, 0, 0, 0.35);
+  --cnt-usz: 22px;
+  font-size: 12px;
+}
+
+/* Phones: the scene on top, the settings in a sheet below it. */
+@media (max-width: 720px) {
+  :root {
+    --panel-w: 0px;
+    --sheet-h: min(56dvh, 520px);
+  }
+
+  body[data-ui="off"] { --sheet-h: 0px; }
+
+  .view { inset: 0 0 var(--sheet-h) 0; }
+
+  .sidebar {
+    top: auto;
+    left: 0;
+    width: auto;
+    height: var(--sheet-h);
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-left: 0;
+    overscroll-behavior: contain;
+  }
+}
+
+/* Fingers: taller rows, and text fields large enough that the page doesn't zoom in on them. */
+@media (pointer: coarse) {
+  .sidebar .tp-rotv { --cnt-usz: 30px; font-size: 13px; }
+  .sidebar input { font-size: 16px; }
+}
+
+html, body { background: #000; overflow: hidden; }
+</style>
+</head>
+<body>
+<main class="view">
+  <div class="stage">
+    <canvas id="wall"></canvas>
+    <img class="reference" alt="">
+  </div>
+</main>
+<aside class="sidebar"></aside>
+<script type="module">
+// letters.js
+var ASPECT = 2e3 / 1293;
+var PX = 1 / 1293;
+var CELL = 657 * PX;
+var SLIT = 6.5 * PX;
+var S = SLIT / CELL;
+var SWEEP_R = 32 * PX;
+var DOME = 80 * PX;
+var FOOT = 56 * PX;
+var FOOT_TIP = 44 * PX;
+var WEDGE = 110 * PX;
+var MAX_LETTERS = 10;
+var MAX_CELLS = 32;
+var MAX_ROWS = 4;
+var MAX_SHEETS = 4;
+var MAX_FIBRES = 4;
+var SHEET_TEXELS = MAX_SHEETS * 3;
+var TEXELS = SHEET_TEXELS + MAX_FIBRES * 3;
+var ALPHABET = ["ABCDEFGHI", "JKLMNOPQR", "STUVWXYZ"];
+function bend(mode, innerL, innerR, shape2) {
+  const R = shape2.corner * PX;
+  const ARCH = shape2.arch * PX;
+  const TIP = shape2.tip * PX;
+  if (mode === "arch") return { d: [innerL ? -ARCH : R, innerR ? ARCH : -R], h: 48 * PX };
+  if (mode === "dome") return { d: [innerL ? -ARCH : DOME, innerR ? ARCH : -DOME], h: 120 * PX };
+  if (mode === "taper") return { d: [innerL ? -ARCH : 2 * DOME, innerR ? ARCH : -2 * DOME], h: 330 * PX };
+  if (mode === "sweep" && innerL && !innerR) return { d: [-TIP, -SWEEP_R], h: 46 * PX };
+  if (mode === "sweep" && innerR && !innerL) return { d: [SWEEP_R, TIP], h: 46 * PX };
+  if (mode === "wedge" && innerL && !innerR) return { d: [-TIP, -WEDGE], h: 220 * PX };
+  if (mode === "wedge" && innerR && !innerL) return { d: [WEDGE, TIP], h: 220 * PX };
+  if (mode === "foot" && innerL && !innerR) return { d: [FOOT, FOOT_TIP], h: 42 * PX };
+  if (mode === "foot" && innerR && !innerL) return { d: [-FOOT_TIP, -FOOT], h: 42 * PX };
+  if (mode === "flat") return { d: [0, 0], h: 1 };
+  return { d: [R, -R], h: 36 * PX };
+}
+var T = 2 / 1293;
+var B = 1291 / 1293;
+var stem = ["L", T, B, "arch", "sweep"];
+var third = [[0, 1 / 3 - S], [1 / 3 + S, 2 / 3 - S], [2 / 3 + S, 1]];
+var again = { restart: true };
+var glow = { glow: true };
+var both = { restart: true, glow: true };
+var LETTERS = {
+  A: [["L", T, 0.6, "arch", "sweep"], ["R", T, 0.6, "arch", "sweep"], [[0, 0.36], 0.6, B, "round", "round", again], [[0.64, 1], 0.6, B, "round", "round", again]],
+  B: [stem, ["R", T, 0.47, "arch", "sweep"], ["R", 0.53, B, "sweep", "sweep", both]],
+  C: [stem, ["R", T, 0.3, "arch", "sweep", glow], ["R", 0.7, B, "sweep", "sweep", both]],
+  D: [stem, ["R", T, B, "dome", "dome", glow]],
+  E: [stem, ["R", T, 0.28, "arch", "sweep", glow], ["R", 0.42, 0.58, "sweep", "sweep", both], ["R", 0.72, B, "sweep", "sweep", both]],
+  F: [stem, ["R", T, 0.28, "arch", "sweep", glow], ["R", 0.42, 0.58, "sweep", "sweep", both]],
+  G: [stem, ["R", T, 0.28, "arch", "sweep", glow], ["R", 0.48, B, "sweep", "sweep", both]],
+  H: [["L", T, 0.5, "round", "sweep"], ["R", T, 0.5, "round", "sweep"], ["L", 0.5, B, "sweep", "round", again], ["R", 0.5, B, "sweep", "round", again]],
+  I: [[[0.24, 0.76], T, B, "round", "round"]],
+  J: [["R", T, B, "round", "sweep", glow], ["L", 0.62, B, "round", "sweep", { restart: true, lit: true }]],
+  K: [["L", T, B, "round", "sweep"], ["R", T, 0.5, "round", "wedge"], ["R", 0.5, B, "wedge", "foot", both]],
+  L: [stem, ["R", 0.72, B, "sweep", "sweep", both]],
+  M: [[third[0], T, B, "arch", "round"], [third[1], T, B, "arch", "round"], [third[2], T, B, "arch", "round"]],
+  N: [["L", T, B, "arch", "round"], ["R", T, B, "arch", "round", glow]],
+  O: [stem, ["R", T, B, "arch", "sweep", glow]],
+  P: [stem, ["R", T, 968 / 1293, "arch", "sweep", glow]],
+  Q: [stem, ["R", T, 0.8, "arch", "sweep"], ["R", 0.8, B, "sweep", "foot", both]],
+  R: [stem, ["R", T, 645 / 1293, "arch", "sweep"], ["R", 645 / 1293, B, "sweep", "foot", both]],
+  S: [["L", T, 0.52, "arch", "sweep"], ["R", T, 0.32, "arch", "sweep", glow], ["R", 0.4, B, "sweep", "sweep", both], ["L", 0.6, B, "sweep", "sweep", again]],
+  T: [["F", T, 0.27, "round", "round"], [[0.3, 0.7], 0.31, B, "round", "round", again]],
+  U: [["L", T, B, "round", "arch"], ["R", T, B, "round", "arch", glow]],
+  V: [["L", T, B, "round", "taper"], ["R", T, B, "round", "taper", glow]],
+  W: [[third[0], T, B, "round", "arch"], [third[1], T, B, "round", "arch"], [third[2], T, B, "round", "arch", glow]],
+  X: [["L", T, 0.5, "round", "wedge"], ["R", T, 0.5, "round", "wedge"], ["L", 0.5, B, "wedge", "round", again], ["R", 0.5, B, "wedge", "round", again]],
+  Y: [["L", T, 0.5, "round", "sweep"], ["R", T, 0.5, "round", "sweep"], [[0.28, 0.72], 0.5, B, "round", "round", again]],
+  Z: [["R", T, 0.52, "arch", "sweep"], ["L", T, 0.32, "arch", "sweep"], ["L", 0.4, B, "sweep", "sweep", again], ["R", 0.6, B, "sweep", "sweep", both]],
+  0: [["L", T, B, "arch", "arch"], ["R", T, B, "arch", "arch", glow]]
+};
+var ACCENTS = {
+  P: [[0.067, 0.04, 0.96, 1, 0.62, 0.93, 0], [0.941, 0.08, 0.66, 0, 0.3, 0.61, 0]],
+  R: [[0.848, 0.04, 0.99, 0.2, 0.56, 0.84, 1]],
+  O: [
+    [0.157, 0.05, 0.97, 0.8, 0.52, 0.93, 0],
+    [0.6, 0.05, 0.88, 0.1, 0.47, 0.83, 0],
+    [0.956, 0.06, 0.99, 0.9, 0.62, 0.95, 0],
+    [0.93, 0.12, 0.56, 1, 2, 2, 0]
+  ]
+};
+var FALLBACK = LETTERS.O;
+function seeded(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = s + 1831565813 >>> 0;
+    let t2 = Math.imul(s ^ s >>> 15, 1 | s);
+    t2 ^= t2 + Math.imul(t2 ^ t2 >>> 7, 61 | t2);
+    return ((t2 ^ t2 >>> 14) >>> 0) / 4294967296;
+  };
+}
+function accentsFor(ch) {
+  if (ACCENTS[ch]) return ACCENTS[ch];
+  const rand = seeded(ch.codePointAt(0) * 2654435761);
+  return Array.from({ length: 2 }, () => {
+    const top = 0.03 + rand() * 0.25;
+    const bottom = Math.min(0.98, top + 0.5 + rand() * 0.4);
+    const from = top + (bottom - top) * (0.35 + rand() * 0.3);
+    return [0.05 + rand() * 0.9, top, bottom, rand(), from, from + (bottom - from) * (0.75 + rand() * 0.25), rand() < 0.2 ? 1 : 0];
+  });
+}
+function pack(lines, shape2) {
+  const gap = shape2.gap * PX;
+  const rowsOf = lines.slice(0, MAX_ROWS).map((line) => [...line.toUpperCase()]);
+  const data = new Float32Array(MAX_CELLS * TEXELS * 4).fill(0);
+  const rows = new Float32Array(MAX_ROWS * 4);
+  const widthOf = (n) => n * CELL + Math.max(0, n - 1) * gap;
+  const width = Math.max(...rowsOf.map((r) => widthOf(r.length)));
+  const columns = { L: [0, 0.5 - S], R: [0.5 + S, 1], F: [0, 1] };
+  let cell = 0;
+  rowsOf.forEach((chars, row) => {
+    rows.set([(width - widthOf(chars.length)) / 2, cell, chars.length, 0], row * 4);
+    chars.forEach((ch, i) => {
+      if (cell >= MAX_CELLS) return;
+      const x0 = i * (CELL + gap);
+      const at = cell++;
+      const texel = (k) => (at * TEXELS + k) * 4;
+      for (let k = 0; k < MAX_SHEETS; k++) data[texel(k * 3)] = 1e3;
+      for (let k = 0; k < MAX_FIBRES; k++) data[texel(SHEET_TEXELS + k * 3)] = 1e3;
+      if (ch === " ") return;
+      (LETTERS[ch] || FALLBACK).slice(0, MAX_SHEETS).forEach(([cols, top, bottom, topEnd, bottomEnd, opt = {}], k) => {
+        const [a, b] = typeof cols === "string" ? columns[cols] : cols;
+        const innerL = a > 1e-3;
+        const innerR = b < 0.999;
+        const t2 = bend(topEnd, innerL, innerR, shape2);
+        const e = bend(bottomEnd, innerL, innerR, shape2);
+        const lit = opt.lit ?? (innerL || !innerR);
+        const flags = (lit ? 1 : 0) + (opt.restart ? 2 : 0) + (opt.glow ? 4 : 0);
+        data.set([
+          x0 + a * CELL,
+          x0 + b * CELL,
+          top,
+          bottom,
+          ...t2.d,
+          ...e.d,
+          t2.h,
+          e.h,
+          flags,
+          0
+        ], texel(k * 3));
+      });
+      accentsFor(ch).slice(0, MAX_FIBRES).forEach(([ax, top, bottom, blue, from, to, cools], k) => {
+        data.set([
+          x0 + ax * CELL,
+          top,
+          bottom,
+          blue,
+          from,
+          to,
+          cools,
+          0,
+          x0,
+          x0 + CELL,
+          at * 7.3 + k * 1.91,
+          0
+        ], texel(SHEET_TEXELS + k * 3));
+      });
+    });
+  });
+  const rowPitch = 1 + shape2.rowGap;
+  const height = rowsOf.length + (rowsOf.length - 1) * shape2.rowGap;
+  return { data, rows, nRows: rowsOf.length, width, height, rowPitch };
+}
+
+// shader.js
+var VERT = `#version 300 es
+  in vec2 aPos;
+  uniform vec4 uTile;         // the part of the stage drawn: offset, size
+  out vec2 vUv;
+  void main() {
+    vUv = uTile.xy + vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5) * uTile.zw;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }`;
+var FRAG = `#version 300 es
+  precision highp float;
+  const int SHEET_TEXELS = ${SHEET_TEXELS};
+  uniform highp sampler2D uSheetTex;
+  uniform vec4 uRows[${MAX_ROWS}];
+  uniform int uRowCount;
+  uniform float uRowPitch;
+  uniform float uAspect;      // the stage, width over height
+  uniform vec4 uFrame;        // where the letters sit on it: offset, scale across and down
+  uniform float uCell;
+  uniform float uGap;
+  uniform vec2 uPx;           // one pixel, in the letters' frame: across, down
+  uniform float uTime;        // the light's clock
+  uniform float uFibreTime;   // the coloured threads' clock
+  uniform float uDensity;
+  uniform float uWarm;
+  uniform float uGain;
+  uniform vec4 uShape;        // how far the light falls (dim, lit), the floors it settles to
+  uniform vec2 uEnd;          // how far and how strongly it rises above an end
+  uniform vec4 uFall;         // how sharply it falls (dim, lit), reach below a seam, long threads
+  uniform vec4 uMotion;       // breathing, swell, thread texture, rim
+  uniform float uSparkle;     // the scattered coloured threads
+  uniform vec3 uRamp[5];      // black through navy and steel blue to silver white
+  uniform vec3 uGlow;         // where the light ends
+  uniform vec3 uFibreCool;    // a coloured fibre above where it warms
+  uniform vec3 uFibreWarm[3]; // and as it warms: light, mid, deep
+  uniform vec3 uBg;
+  in vec2 vUv;
+  out vec4 outColor;
+
+  float hash(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+  float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+  // Smooth 1D and 2D value noise.
+  float vn(float x) {
+    float i = floor(x);
+    float f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(hash(i), hash(i + 1.0), f);
+  }
+  float vn2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x),
+               mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+
+  vec3 ramp(float v) {
+    // Highlights roll off softly instead of clipping, so threads stay
+    // apart even where the light is brightest.
+    v = max(v, 0.0);
+    if (v > 0.7) v = 0.7 + 0.3 * (1.0 - exp(-(v - 0.7) / 0.3));
+    if (v < 0.25) return mix(uRamp[0], uRamp[1], v / 0.25);
+    if (v < 0.5) return mix(uRamp[1], uRamp[2], (v - 0.25) / 0.25);
+    if (v < 0.75) return mix(uRamp[2], uRamp[3], (v - 0.5) / 0.25);
+    return mix(uRamp[3], uRamp[4], (v - 0.75) / 0.25);
+  }
+
+  // 1 at the end (t = 0), 0 once t reaches 1. A thread offset by it runs
+  // straight, then turns to lie flat along the end. Unlike a quarter
+  // circle, which starts bending all at once, it eases into the turn (its
+  // curvature grows from nothing), so corners read soft, as in the
+  // original.
+  float bendAt(float t) {
+    float s = 1.0 - clamp(t, 0.0, 1.0);
+    return 1.0 - sqrt(max(0.0, 1.0 - pow(s, 2.6)));
+  }
+
+  // The thread through (x, y) on a sheet: psi = left + (x - left - off) / scale.
+  vec2 thread(vec4 a, vec4 b, vec4 c, float x, float y) {
+    float bt = bendAt((y - a.z) / c.x);
+    float bb = bendAt((a.w - y) / c.y);
+    float off = b.x * bt + b.z * bb;
+    float scale = 1.0 + ((b.y - b.x) * bt + (b.w - b.z) * bb) / (a.y - a.x);
+    return vec2(a.x + (x - a.x - off) / scale, scale);
+  }
+
+  // One thread's brightness at u: its own level, with a soft edge where it
+  // meets the next, as fine strands of light do.
+  float strand(float at) {
+    float id = floor(at);
+    float h0 = hash(id * 1.37 + 3.1);
+    float h1 = hash((id + 1.0) * 1.37 + 3.1);
+    return mix(h0 * h0, h1 * h1, smoothstep(0.62, 1.0, fract(at)));
+  }
+
+  // A fibre warming up: white-hot, then the palette's light, mid and deep
+  // warm colours, darkening at the very end. With the original's colours
+  // (cream, amber, red) it runs as sampled off it: cream, yellow, amber,
+  // orange, red, dark red.
+  vec3 warmth(float s) {
+    s = clamp(s, 0.0, 1.0);
+    if (s < 0.18) return mix(vec3(0.98, 0.98, 0.95), uFibreWarm[0], s / 0.18);
+    if (s < 0.5) return mix(uFibreWarm[0], uFibreWarm[1], (s - 0.18) / 0.32);
+    if (s < 0.85) return mix(uFibreWarm[1], uFibreWarm[2], (s - 0.5) / 0.35);
+    return mix(uFibreWarm[2], uFibreWarm[2] * 0.66, (s - 0.85) / 0.15);
+  }
+
+  // The colour of thread psi on sheet a ([left, right] x [top, bottom]).
+  // dpsi: how much psi one pixel covers. steep: how flat the thread lies
+  // here (its run across per unit down). edge: how far the pixel is from
+  // the sheet's nearer side.
+  vec3 shade(float psi, float dpsi, float steep, float edge, vec4 a, int flags, float y, float cap, int letter) {
+    float side = (flags & 1) != 0 ? 1.0 : 0.0;
+    bool restart = (flags & 2) != 0;
+    float warmEnd = (flags & 4) != 0 ? 1.0 : 0.0;
+    float down = restart ? y - a.z : y;
+    float up = max(0.0, a.w - y);
+
+    // Threads: discrete fine threads, each with its own brightness and
+    // reach, over softer layers. Each thread is averaged over the pixel it
+    // covers, so threads stay crisp without aliasing.
+    //
+    // Where the threads turn to lie flat, each one overlaps more of its
+    // neighbours, like translucent strands laid over each other, so their
+    // stripes melt into one smooth sheen and the layers add up brighter.
+    // overlap runs 0 for an upright thread to 1 for a flat one.
+    float k = 880.0 * uDensity / ${(2e3 / 1293).toFixed(6)};
+    float u = psi * k;
+    float du = max(dpsi * k, 1e-4);
+    float fineU = u * 1.15;
+    float fdu = du * 1.15;
+    float thread = 0.0;
+    float threadReach = 0.0;
+    for (int i = 0; i < 4; i++) {
+      float at = fineU + fdu * (float(i) - 1.5) / 4.0;
+      thread += strand(at);
+      threadReach += pow(hash(floor(at) * 0.71 + 8.3), 4.0);
+    }
+    thread *= 0.25;
+    threadReach *= 0.25;
+    float overlap = 1.0 - inversesqrt(1.0 + steep * steep);
+    // Past a few threads per pixel (or where they overlap), only their
+    // average is left: 1/3 for the threads, 1/5 for their reach.
+    float blend = max(smoothstep(1.5, 5.0, fdu), 0.55 * smoothstep(0.5, 1.0, overlap));
+    thread = mix(thread, 1.0 / 3.0, blend);
+    threadReach = mix(threadReach, 0.2, blend);
+    // Weighted like the original: the fine threads are fairly gentle, and
+    // most of the variation comes in broader bands of a few dozen pixels.
+    float fine = mix(vn(u * 0.33 + 13.0), 0.5, smoothstep(2.0, 8.0, du) * 0.7 + 0.3 * blend);
+    float s = 0.26 + 0.3 * thread + 0.16 * fine + 0.2 * vn(u * 0.12 + 7.0) + 0.2 * vn(u * 0.05 + 29.0);
+    s = 0.64 + (s - 0.64) * uMotion.z;
+
+    // Light falls from where each run starts and settles to a floor: a dim
+    // one on the left of a slit, a mid one on the right, where the slab
+    // also catches light again above where it ends. The curves are fitted
+    // to the original; each thread varies around them a little, and its
+    // reach breathes slowly so the light slides up and down.
+    float time = uTime;
+    float run = down + up;
+    float own = vn(u * 0.9 + 17.0);
+    float breathe = 1.0 + uMotion.x * 0.52 * (vn2(vec2(u * 0.04, time * 0.22)) - 0.5);
+    // A soft swell of light rolling across the word, left to right.
+    float swell = 1.0 + 0.12 * uMotion.y * sin(psi * 4.0 - time * 0.7);
+    // A run whose light starts again partway down (below a seam) fades
+    // faster than one hanging from the top edge.
+    float again = restart ? uFall.z : 1.0;
+    // A few threads carry their light much further down than the rest.
+    float reachTop = mix(uShape.x, uShape.y, side) * again * mix(0.8, 1.2, own) * (1.0 + uFall.w * threadReach) * breathe * swell;
+    float floorLight = mix(uShape.z, uShape.w, side);
+    float fall = exp(-pow(down / reachTop, mix(uFall.x, uFall.y, side)));
+    float reachEnd = uEnd.x * run * mix(0.8, 1.2, vn(u * 0.7 + 41.0)) * (2.0 - breathe);
+    float rise = side * uEnd.y * exp(-pow(up / reachEnd, 1.3));
+    // Where the threads turn over the top they catch the most light.
+    float light = (floorLight + (1.0 - floorLight) * fall + rise) * (1.0 + 0.3 * cap + 0.15 * overlap);
+
+    // Bands of light drifting along each thread, up on some, down on others.
+    float dir = vn(u * 0.07 + 21.0) > 0.5 ? 1.0 : -1.0;
+    float pace = mix(0.25, 1.0, vn(u * 0.11 + 5.0));
+    float bands = vn2(vec2(u * 0.5, down * 4.0 - time * pace * dir));
+    float flow = 0.74 + 0.52 * bands;
+
+    // A fine bright rim along both sides of the sheet, a couple of pixels
+    // wide however the side runs, so it follows the corners too.
+    float rim = exp(-max(0.0, edge) / 0.0015) * uMotion.w;
+
+    float v = (s * light * flow + rim * mix(0.45, 0.8, side) * (0.35 + light)) * uGain;
+    vec3 col = ramp(v);
+
+    // Scattered warm and blue threads, strongest low on the slabs. Each
+    // takes its turn: every so often one fades out and another lights up,
+    // so the colour wanders across the word.
+    float ftime = uFibreTime;
+    float group = floor(u * 0.25);
+    float turn = ftime * 0.08 + hash(group * 3.1 + 5.0);
+    float pick = hash(group + 91.0 + floor(turn) * 13.7);
+    float shown = sin(3.14159 * fract(turn));
+    float line = smoothstep(0.2, 0.0, abs(fract(u * 0.25) - 0.5)) * shown * uSparkle;
+    float low = smoothstep(0.15, 0.55, down) * (0.4 + 0.8 * bands);
+    if (pick > 1.0 - 0.004 * uWarm) {
+      col = mix(col, warmth(0.3 + 0.6 * smoothstep(0.3, 0.9, down)), line * low * 0.4);
+    } else if (pick < 0.01) {
+      col = mix(col, mix(uFibreCool, vec3(1.0), 0.25), line * low * 0.45);
+    }
+
+    // The letter's own coloured threads: single glowing fibres, a couple of
+    // pixels wide with a faint halo, lying along the thread they sit on.
+    // Above where it warms each is blue-white or sky blue, then it runs
+    // white-hot through cream, yellow, amber and orange to red and fades
+    // out (or, if it cools again, back to white). Each lives for a while,
+    // its colours sliding slowly down, then fades and lights up on another
+    // thread of the letter. The first time round it sits where the
+    // original has it, fully lit.
+    // Squeezed across, a fibre gives up only part of its width.
+    float squeeze = sqrt(uPx.x / uPx.y);
+    for (int i = 0; i < 4; i++) {
+      vec4 ac = texelFetch(uSheetTex, ivec2(SHEET_TEXELS + i * 3, letter), 0);
+      if (ac.x > 100.0) break;
+      vec4 heat = texelFetch(uSheetTex, ivec2(SHEET_TEXELS + i * 3 + 1, letter), 0);
+      vec4 home = texelFetch(uSheetTex, ivec2(SHEET_TEXELS + i * 3 + 2, letter), 0);
+      float life = ftime * (0.05 + 0.04 * hash(home.z * 7.1)) + 0.2 + 0.55 * hash(home.z * 3.3);
+      float lap = floor(life);
+      float age = fract(life);
+      if (lap > 0.5) {
+        float seed = home.z + lap * 1.7;
+        ac.x = mix(home.x + 0.03, home.y - 0.03, hash(seed));
+        if (abs(psi - ac.x) > 0.008 * squeeze) continue;
+        ac.y = mix(0.03, 0.28, hash(seed + 2.9));
+        ac.z = min(0.98, ac.y + mix(0.5, 0.9, hash(seed + 4.3)));
+        ac.w = hash(seed + 6.1);
+        heat.x = mix(ac.y, ac.z, mix(0.35, 0.65, hash(seed + 8.7)));
+        heat.y = mix(heat.x, ac.z, mix(0.75, 1.0, hash(seed + 9.9)));
+        heat.z = hash(seed + 11.3) < 0.2 ? 1.0 : 0.0;
+        if (hash(seed + 13.1) < 0.2) heat.xy = vec2(2.0);
+      }
+      float d = abs(psi - ac.x) / squeeze;
+      if (d > 0.008) continue;
+      float fade = smoothstep(0.0, 0.18, age) * smoothstep(1.0, 0.8, age);
+      // Its colours slide down while it lives.
+      float yy = y - (age - 0.5) * 0.08;
+      bool warms = heat.x < 1.5;
+      bool cools = heat.z > 0.5;
+      // Where the fibre is lit: in from its top, out at its bottom, or just
+      // past its red end when it ends there.
+      float stop = warms && !cools ? heat.y + 0.03 : ac.z;
+      float lit = smoothstep(ac.y, ac.y + 0.06, yy) * smoothstep(stop, stop - 0.07, yy) * fade * uSparkle;
+      if (lit <= 0.0) continue;
+      // Its colour along its length.
+      float t = warms ? (yy - heat.x) / max(0.01, heat.y - heat.x) : -1.0;
+      if (cools) t = t < 0.3 ? t / 0.3 * 0.55 : 0.55 * (1.0 - (t - 0.3) / 0.7);
+      float sky = ac.w * smoothstep(ac.y, ac.y + 0.18, yy) * (warms ? smoothstep(heat.x, heat.x - 0.14, yy) : 1.0);
+      vec3 fibre = mix(mix(uFibreCool, vec3(1.0), 0.85), uFibreCool, sky * 0.85);
+      if (t > 0.0) fibre = mix(vec3(0.98, 0.98, 0.95), warmth(t), mix(0.55, 1.0, uWarm));
+      float core = 1.0 - smoothstep(0.0007, 0.0021, d);
+      float halo = exp(-d / 0.0035) * (1.0 - core);
+      col = mix(col, fibre, core * lit) + fibre * halo * lit * 0.3;
+    }
+
+    // Where the light ends it turns warm: a glowing band, cream above it.
+    // The band sits right on the edge, where the surface turns away from
+    // the light, so it replaces the threads rather than adding.
+    float end = exp(-up / 0.0035);
+    col = mix(col, col * vec3(1.06, 1.0, 0.9), warmEnd * exp(-up / 0.05) * uWarm);
+    col = mix(col, uGlow, clamp(end * 1.3, 0.0, 1.0) * warmEnd * mix(0.4, 1.0, uWarm) * smoothstep(0.05, 0.2, down));
+    return col;
+  }
+
+  float luma(vec3 c) { return dot(c, vec3(0.3, 0.6, 0.1)); }
+
+  // Adds a letter's sheets at (x, y), and covered keeps how much of the
+  // pixel they fill.
+  void addLetter(int letter, float x, float y, inout vec3 col, inout float covered) {
+    for (int k = 0; k < 4; k++) {
+      vec4 a = texelFetch(uSheetTex, ivec2(k * 3, letter), 0);
+      if (a.x > 100.0) break;
+      if (y < a.z - uPx.y || y > a.w + uPx.y) continue;
+      vec4 b = texelFetch(uSheetTex, ivec2(k * 3 + 1, letter), 0);
+      vec4 c = texelFetch(uSheetTex, ivec2(k * 3 + 2, letter), 0);
+
+      // The thread here, and how fast psi changes across and down, so
+      // edges are smoothed over one pixel whichever way they run. grad is
+      // per pixel, so the sides stay one pixel soft when the letters are
+      // stretched.
+      vec2 t = thread(a, b, c, x, y);
+      float psi = t.x;
+      float dx = 1.0 / t.y;
+      float dy = (thread(a, b, c, x, y + uPx.y).x - psi) / uPx.y;
+      float grad = length(vec2(dx * uPx.x, dy * uPx.y));
+      float cover = smoothstep(-1.0, 1.0, (psi - a.x) / grad)
+        * smoothstep(-1.0, 1.0, (a.y - psi) / grad)
+        * smoothstep(-uPx.y, uPx.y, y - a.z)
+        * smoothstep(-uPx.y, uPx.y, a.w - y);
+      if (cover <= 0.0) continue;
+
+      float cap = a.z < 0.01 ? exp(-(y - a.z) / 0.02) : 0.0;
+      float edge = min(psi - a.x, a.y - psi) / grad * sqrt(uPx.x * uPx.y);
+      vec3 sheet = shade(psi, abs(dx) * uPx.x + abs(dy) * uPx.y, abs(dy / dx), edge, a, int(c.z + 0.5), y, cap, letter) * cover;
+      // Where sheets cross (over a slit, under a tip) they show through
+      // each other like translucent strands, so both sets of threads and
+      // both edges stay visible. The closer their brightness, the more
+      // evenly they mix; a bright tip over a dark sheet stays bright.
+      float near = min(luma(col), luma(sheet)) / max(max(luma(col), luma(sheet)), 1e-4);
+      col = mix(max(col, sheet), (col + sheet) * 0.5, covered * cover * near);
+      covered = max(covered, cover);
+    }
+  }
+
+  void main() {
+    // Into the letters' own frame, where a letter is one unit tall.
+    float x = (vUv.x * uAspect - uFrame.x) / uFrame.z;
+    float y = (vUv.y - uFrame.y) / uFrame.w;
+    outColor = vec4(uBg, 1.0);
+
+    // Which row, and which letter in it.
+    int row = int(floor(y / uRowPitch));
+    if (row < 0 || row >= uRowCount) return;
+    vec4 line = uRows[row];
+    y -= float(row) * uRowPitch;
+    x -= line.x;
+    float pitch = uCell + uGap;
+    int slot = int(floor((x + uGap * 0.5) / pitch));
+    if (slot < 0 || float(slot) >= line.z) return;
+    int letter = int(line.y) + slot;
+
+    // This letter, and its neighbour when the pixel is near a side, since
+    // a foot's tip runs on under the next letter.
+    vec3 col = vec3(0.0);
+    float covered = 0.0;
+    float left = x - float(slot) * pitch;
+    for (int n = -1; n <= 1; n++) {
+      int s = slot + n;
+      if (s < 0 || float(s) >= line.z) continue;
+      if (n == -1 && left > 0.06) continue;
+      if (n == 1 && left < uCell - 0.06) continue;
+      addLetter(int(line.y) + s, x, y, col, covered);
+    }
+    outColor = vec4(col + uBg * (1.0 - covered), 1.0);
+  }`;
+
+// palettes.js
+var palette = (shadow, steel, silver, highlight, glow2, background, fibreCool, warmLight, warmMid, warmDeep) => ({ shadow, steel, silver, highlight, glow: glow2, background, fibreCool, warmLight, warmMid, warmDeep });
+var PALETTES = {
+  "XDR Blue": palette("#1a1d24", "#475e7a", "#a3b8d1", "#e6ebf2", "#ffad66", "#000000", "#38a3eb", "#fff2ad", "#f5ba29", "#db3317"),
+  Graphite: palette("#1b1b1d", "#4b4b51", "#a7a7ae", "#ececef", "#ffb57a", "#000000", "#9db6cf", "#fff0c8", "#ffb347", "#e0533a"),
+  Ember: palette("#2b0c06", "#c2361a", "#ff9a42", "#fff0cf", "#ffe08a", "#040100", "#ffd36b", "#fff6c9", "#ffb22e", "#ff3b6b"),
+  Chroma: palette("#120c2c", "#6d3df0", "#ff6fb6", "#ffe2b8", "#ffb36b", "#020106", "#62d6ff", "#fff1d6", "#ffa94a", "#ff3d8b"),
+  Violet: palette("#170b33", "#6231e0", "#c890ff", "#fcecff", "#ff9ad6", "#020005", "#7fdcff", "#ffe9f7", "#ff7ac8", "#ff4f6e"),
+  Ocean: palette("#06123a", "#1f55e6", "#4fd0ff", "#ebfbff", "#8ef3ff", "#000207", "#b0fbff", "#f2fffb", "#7df0d6", "#7a5cff"),
+  Aurora: palette("#04211f", "#0c8a78", "#57e6c6", "#ecfff9", "#c6ff8f", "#000303", "#9ff6ff", "#fbffe0", "#c8f56a", "#ff7cc4"),
+  "Rose Gold": palette("#2a1210", "#b0584a", "#f6b29b", "#fff3ec", "#ffd2a3", "#030101", "#ffe0cf", "#fff1dc", "#ffb16b", "#e0466e"),
+  Paper: palette("#2a2e36", "#6b7a8f", "#bfc8d4", "#fbfcfd", "#ff9c5a", "#e9e6df", "#3f86d6", "#ffe6a3", "#f2a023", "#d6331c")
+};
+
+// persist.js
+var VIEW = ["t", "ui", "ref", "embed"];
+var STORE = "pro-threads:";
+var nav = performance.getEntriesByType("navigation")[0];
+var files = performance.getEntriesByType("resource").filter((e) => e.name.startsWith(location.origin) && /\.(js|css)$/.test(new URL(e.name).pathname));
+var full = (e) => e.encodedBodySize > 0 && e.transferSize > e.encodedBodySize;
+var hardReload = nav?.type === "reload" && files.length > 0 && files.every(full);
+if (hardReload) {
+  try {
+    Object.keys(sessionStorage).filter((k) => k.startsWith(STORE)).forEach((k) => sessionStorage.removeItem(k));
+  } catch {
+  }
+  const view = new URLSearchParams([...new URLSearchParams(location.search)].filter(([k]) => VIEW.includes(k)));
+  history.replaceState(null, "", location.pathname + query(view) + location.hash);
+}
+var params = new URLSearchParams("embed=1&quality=1&autoQuality=0&fps=60&stretch=1");
+var embedded = params.has("embed");
+if (embedded) {
+  document.body.dataset.ui = "off";
+  document.body.dataset.embed = "";
+}
+var calm = embedded && false;
+function announce() {
+  if (embedded && parent !== window) parent.postMessage({ type: "pro-threads:ready" }, "*");
+}
+function number(raw, [min, max] = [-Infinity, Infinity]) {
+  const value = Number(raw);
+  return raw !== null && raw !== "" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : void 0;
+}
+function query(search) {
+  const s = search.toString();
+  return s ? `?${s}` : "";
+}
+function format(value) {
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (typeof value === "number") return String(+value.toFixed(4));
+  return String(value).replace(/^#/, "");
+}
+var slug = (name) => name.normalize("NFD").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+var timer = 0;
+function save(page, settings) {
+  if (embedded) return;
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    const current2 = new URLSearchParams(location.search);
+    const next = new URLSearchParams([...current2].filter(([k]) => VIEW.includes(k)));
+    for (const [k, v] of settings) next.set(k, v);
+    const search = query(next);
+    history.replaceState(null, "", location.pathname + search + location.hash);
+    try {
+      sessionStorage.setItem(STORE + page, search);
+    } catch {
+    }
+  }, 150);
+}
+function pageUrl(page, path, shared) {
+  let search = "";
+  try {
+    search = sessionStorage.getItem(STORE + page) ?? "";
+  } catch {
+  }
+  const next = new URLSearchParams(search);
+  for (const [k, v] of Object.entries(shared)) {
+    if (v == null) next.delete(k);
+    else next.set(k, v);
+  }
+  return path + query(next);
+}
+
+// i18n.js
+var ZH = {
+  // Tabs and presets
+  Shapes: "\u5F62\u72B6",
+  Text: "\u6587\u5B57",
+  Spacing: "\u5B57\u8DDD",
+  "Row gap": "\u884C\u8DDD",
+  Presets: "\u9884\u8BBE",
+  Palette: "\u914D\u8272",
+  Effect: "\u6548\u679C",
+  Original: "\u539F\u7248",
+  Calm: "\u5E73\u9759",
+  Lively: "\u6D3B\u6CFC",
+  Silk: "\u4E1D\u7EF8",
+  "Fine Wire": "\u7EC6\u4E1D",
+  Glow: "\u8F89\u5149",
+  "Low Light": "\u6697\u5149",
+  "XDR Blue": "XDR \u84DD",
+  Graphite: "\u77F3\u58A8",
+  Ember: "\u4F59\u70EC",
+  Chroma: "\u70AB\u5F69",
+  Violet: "\u7D2B\u7F57\u5170",
+  Ocean: "\u6D77\u6D0B",
+  Aurora: "\u6781\u5149",
+  "Rose Gold": "\u73AB\u7470\u91D1",
+  Paper: "\u7EB8\u767D",
+  // Size
+  Size: "\u5C3A\u5BF8",
+  Preset: "\u9884\u8BBE\u5C3A\u5BF8",
+  Custom: "\u81EA\u5B9A\u4E49",
+  Desktop: "\u684C\u9762",
+  Width: "\u5BBD\u5EA6",
+  Height: "\u9AD8\u5EA6",
+  Scale: "\u500D\u7387",
+  Stretch: "\u62C9\u4F38",
+  "Save PNG": "\u4FDD\u5B58 PNG",
+  // Motion
+  Motion: "\u52A8\u6001",
+  Speed: "\u901F\u5EA6",
+  Breathing: "\u547C\u5438",
+  Swell: "\u6D8C\u52A8",
+  "Fibre pace": "\u5F69\u4E1D\u901F\u5EA6",
+  Paused: "\u6682\u505C",
+  "Light speed": "\u5149\u6D41\u901F\u5EA6",
+  Turn: "\u65CB\u8F6C",
+  Parallax: "\u89C6\u5DEE",
+  // Light and look
+  Light: "\u5149\u7EBF",
+  Look: "\u5916\u89C2",
+  Brightness: "\u4EAE\u5EA6",
+  Reach: "\u5149\u7167\u957F\u5EA6",
+  "Dim side": "\u6697\u4FA7",
+  "Lit side": "\u4EAE\u4FA7",
+  Threads: "\u4E1D\u7EBF",
+  Texture: "\u7EB9\u7406",
+  "Edge rim": "\u8FB9\u7F18\u9AD8\u5149",
+  Distance: "\u8DDD\u79BB",
+  Sheen: "\u5149\u6CFD",
+  Contrast: "\u5BF9\u6BD4\u5EA6",
+  Saturation: "\u9971\u548C\u5EA6",
+  Strength: "\u5F3A\u5EA6",
+  From: "\u8D77\u59CB\u4EAE\u5EA6",
+  // Colour
+  Colour: "\u989C\u8272",
+  Shadow: "\u9634\u5F71",
+  Steel: "\u94A2\u84DD",
+  Silver: "\u94F6\u767D",
+  Highlight: "\u9AD8\u5149",
+  "Edge glow": "\u8FB9\u7F18\u8F89\u5149",
+  "Fibre cool": "\u51B7\u8272\u5F69\u4E1D",
+  "Fibre warm 1": "\u6696\u8272\u5F69\u4E1D 1",
+  "Fibre warm 2": "\u6696\u8272\u5F69\u4E1D 2",
+  "Fibre warm 3": "\u6696\u8272\u5F69\u4E1D 3",
+  Background: "\u80CC\u666F",
+  Warmth: "\u6696\u5EA6",
+  Fibres: "\u5F69\u4E1D",
+  // Shape
+  Shape: "\u5B57\u5F62",
+  Corner: "\u5706\u89D2",
+  Arch: "\u62F1\u9AD8",
+  Tip: "\u5C16\u89D2",
+  // Scenes
+  Scene: "\u573A\u666F",
+  "Landing page": "\u843D\u5730\u9875",
+  Layout: "\u5E03\u5C40",
+  Left: "\u9760\u5DE6",
+  Center: "\u5C45\u4E2D",
+  Ring: "\u5706\u73AF",
+  "Black Hole": "\u9ED1\u6D1E",
+  Perspective: "\u900F\u89C6",
+  Tunnel: "\u96A7\u9053",
+  "M\xF6bius": "\u83AB\u6BD4\u4E4C\u65AF\u73AF",
+  // Performance and the rest
+  Performance: "\u6027\u80FD",
+  Resolution: "\u5206\u8FA8\u7387",
+  "Frame rate": "\u5E27\u7387",
+  Auto: "\u81EA\u52A8",
+  Pixels: "\u50CF\u7D20",
+  Reset: "\u91CD\u7F6E",
+  Embed: "\u5D4C\u5165",
+  Close: "\u5173\u95ED",
+  Copy: "\u590D\u5236",
+  Copied: "\u5DF2\u590D\u5236",
+  Link: "\u94FE\u63A5",
+  "Web component": "Web \u7EC4\u4EF6",
+  "Guide on GitHub \u2192": "GitHub \u4E0A\u7684\u6559\u7A0B \u2192",
+  "Paste this where the scene should go. It fills the box you give it, with the settings you see now.": "\u628A\u8FD9\u6BB5\u4EE3\u7801\u8D34\u5230\u8981\u653E\u573A\u666F\u7684\u4F4D\u7F6E\u3002\u573A\u666F\u4F1A\u94FA\u6EE1\u4F60\u7ED9\u5B83\u7684\u533A\u57DF\uFF0C\u5E76\u4FDD\u7559\u73B0\u5728\u770B\u5230\u7684\u8BBE\u7F6E\u3002",
+  Language: "\u8BED\u8A00",
+  Settings: "\u8BBE\u7F6E"
+};
+var language = { value: params.get("lang")?.toLowerCase().startsWith("zh") ? "zh" : "en" };
+var t = (text) => language.value === "zh" && ZH[text] || text;
+var english = /* @__PURE__ */ new WeakMap();
+function translate(root) {
+  document.documentElement.lang = language.value === "zh" ? "zh-Hans" : "en";
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const en = english.get(node) ?? node.nodeValue;
+    if (!ZH[en]) continue;
+    english.set(node, en);
+    node.nodeValue = t(en);
+  }
+}
+function addLanguage(pane2) {
+  pane2.addBinding(language, "value", {
+    label: "Language",
+    view: "radiogrid",
+    groupName: "language",
+    size: [2, 1],
+    cells: (x) => [{ title: "EN", value: "en" }, { title: "\u4E2D\u6587", value: "zh" }][x]
+  }).on("change", () => translate(pane2.element));
+  translate(pane2.element);
+}
+
+// menu.js
+var CSS = `
+  .tp-menu {
+    position: fixed;
+    z-index: 1000;
+    box-sizing: border-box;
+    min-width: 200px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    background: #1f2126;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    color: #c9ced8;
+    scrollbar-width: thin;
+    user-select: none;
+  }
+  .tp-menu_h {
+    padding: 8px 8px 4px 24px;
+    color: #6f7581;
+    font-size: 0.85em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .tp-menu_h:first-child { padding-top: 4px; }
+  .tp-menu_i {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .tp-menu_i[data-active] { background: rgba(255, 255, 255, 0.08); }
+  .tp-menu_i[aria-selected="true"] { color: #ffffff; }
+  .tp-menu_c { width: 8px; flex: none; text-align: center; }
+  .tp-menu_d { margin-left: auto; color: #7d8390; font-variant-numeric: tabular-nums; }
+`;
+var current = null;
+function close() {
+  current?.el.remove();
+  current = null;
+}
+function setActive(index) {
+  const { items } = current;
+  current.active = (index + items.length) % items.length;
+  items.forEach((item, i) => item.toggleAttribute("data-active", i === current.active));
+  items[current.active].scrollIntoView({ block: "nearest" });
+}
+function pick(select, value) {
+  close();
+  if (select.value === value) return;
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+function show(select, groups, detail) {
+  close();
+  const el = document.createElement("div");
+  el.className = "tp-menu";
+  el.setAttribute("role", "listbox");
+  el.style.font = getComputedStyle(select).font;
+  el.addEventListener("mousedown", (event) => event.preventDefault());
+  const options = [...select.options].map((o) => o.value);
+  const labels = Object.fromEntries([...select.options].map((o) => [o.value, o.textContent]));
+  const sections = groups ?? [{ keys: options }];
+  const items = [];
+  for (const { title, keys } of sections) {
+    if (title) {
+      const heading = document.createElement("div");
+      heading.className = "tp-menu_h";
+      heading.textContent = t(title);
+      el.append(heading);
+    }
+    for (const value of keys.filter((k) => options.includes(k))) {
+      const item = document.createElement("div");
+      item.className = "tp-menu_i";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", value === select.value);
+      item.innerHTML = '<span class="tp-menu_c"></span><span></span><span class="tp-menu_d"></span>';
+      item.children[0].textContent = value === select.value ? "\u2713" : "";
+      item.children[1].textContent = labels[value];
+      item.children[2].textContent = detail?.(value) ?? "";
+      const index = items.length;
+      item.addEventListener("pointermove", () => current.active !== index && setActive(index));
+      item.addEventListener("click", () => pick(select, value));
+      el.append(item);
+      items.push(item);
+    }
+  }
+  document.body.append(el);
+  const box = select.getBoundingClientRect();
+  const width = Math.max(box.width, el.offsetWidth);
+  el.style.left = `${Math.max(8, box.right - width)}px`;
+  const below = innerHeight - box.bottom - 12;
+  const above = box.top - 12;
+  const up = el.offsetHeight > below && above > below;
+  el.style.maxHeight = `${up ? above : below}px`;
+  el.style.top = `${up ? box.top - 4 - Math.min(el.offsetHeight, above) : box.bottom + 4}px`;
+  current = { el, select, items, active: -1 };
+  const chosen2 = items.findIndex((item) => item.getAttribute("aria-selected") === "true");
+  setActive(Math.max(0, chosen2));
+}
+function menu(binding, { groups, detail } = {}) {
+  if (!document.querySelector("style[data-tp-menu]")) {
+    const style = document.createElement("style");
+    style.dataset.tpMenu = "";
+    style.textContent = CSS;
+    document.head.append(style);
+  }
+  const select = binding.element?.querySelector("select");
+  if (!select || matchMedia("(pointer: coarse)").matches) return;
+  const isOpen = () => current?.select === select;
+  select.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    select.focus();
+    if (isOpen()) close();
+    else show(select, groups, detail);
+  });
+  select.addEventListener("keydown", (event) => {
+    if (event.key === "Tab") return close();
+    event.preventDefault();
+    if (!isOpen()) {
+      if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) show(select, groups, detail);
+      return;
+    }
+    if (event.key === "ArrowDown") setActive(current.active + 1);
+    if (event.key === "ArrowUp") setActive(current.active - 1);
+    if (event.key === "Escape") close();
+    if (event.key === "Enter" || event.key === " ") current.items[current.active].click();
+  });
+  select.addEventListener("blur", () => isOpen() && close());
+}
+addEventListener("pointerdown", (event) => current && !current.el.contains(event.target) && event.target !== current.select && close(), true);
+addEventListener("scroll", (event) => current && !current.el.contains(event.target) && close(), true);
+addEventListener("resize", close);
+addEventListener("blur", close);
+
+// webgl.js
+function fail(reason) {
+  document.body.dataset.fallback = "";
+  announce();
+  throw new Error(`PRO Threads: ${reason}; showing a still instead.`);
+}
+function getGL(canvas2, attributes) {
+  canvas2.addEventListener("webglcontextlost", (event) => event.preventDefault());
+  canvas2.addEventListener("webglcontextrestored", () => location.reload());
+  const gl2 = canvas2.getContext("webgl2", attributes);
+  if (!gl2) fail("WebGL 2 is not available");
+  return gl2;
+}
+
+// panel.js
+var TWEAKPANE = "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js";
+var ESSENTIALS = "https://cdn.jsdelivr.net/npm/@tweakpane/plugin-essentials@0.2.1/dist/tweakpane-plugin-essentials.min.js";
+var WAIT = 8e3;
+var PHONE = "(max-width: 720px)";
+var CSS2 = `
+  .tp-toggle {
+    display: none;
+    position: fixed;
+    right: 12px;
+    bottom: calc(var(--sheet-h, 0px) + 12px);
+    z-index: 10;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 50%;
+    background: rgba(17, 18, 21, 0.72);
+    color: #c9ced8;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body[data-ui="off"] .tp-toggle { bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .tp-toggle svg { display: block; margin: auto; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+  @media ${PHONE} { .tp-toggle { display: block; } }
+`;
+var SLIDERS = '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>';
+var CROSS = '<path d="M6 6l12 12M18 6L6 18"/>';
+if (!embedded && !params.has("ui") && matchMedia(PHONE).matches) document.body.dataset.ui = "off";
+function addToggle() {
+  const style = document.createElement("style");
+  style.textContent = CSS2;
+  document.head.append(style);
+  const button = document.createElement("button");
+  button.className = "tp-toggle";
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"></svg>';
+  const sync = () => {
+    const off = document.body.dataset.ui === "off";
+    button.firstChild.innerHTML = off ? SLIDERS : CROSS;
+    button.setAttribute("aria-label", t("Settings"));
+    button.setAttribute("aria-expanded", !off);
+  };
+  button.addEventListener("click", () => {
+    document.body.dataset.ui = document.body.dataset.ui === "off" ? "on" : "off";
+  });
+  new MutationObserver(sync).observe(document.body, { attributeFilter: ["data-ui"] });
+  sync();
+  document.body.append(button);
+}
+function standIn() {
+  const element = document.createElement("div");
+  const proxy = new Proxy(function() {
+  }, {
+    get(_, key) {
+      if (key === "element") return element;
+      if (key === "children") return [];
+      if (key === "pages") return [proxy, proxy, proxy];
+      if (key === "then" || typeof key === "symbol") return void 0;
+      if (["disabled", "selected", "hidden", "expanded"].includes(key)) return false;
+      return proxy;
+    },
+    apply: () => proxy,
+    set: () => true
+  });
+  return proxy;
+}
+async function createPane(options) {
+  if (embedded) return standIn();
+  try {
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), WAIT));
+    const [{ Pane }, Essentials] = await Promise.race([Promise.all([import(TWEAKPANE), import(ESSENTIALS)]), timeout]);
+    const pane2 = new Pane(options);
+    pane2.registerPlugin(Essentials);
+    addToggle();
+    return pane2;
+  } catch {
+    console.warn("PRO Threads: the settings panel could not be loaded; the scene runs without it.");
+    return standIn();
+  }
+}
+
+// pace.js
+function createPacer(canvas2) {
+  let visible = true;
+  new IntersectionObserver(([entry]) => {
+    visible = entry.isIntersecting;
+  }).observe(canvas2);
+  let display = 1e3 / 60;
+  let tick = null;
+  let due = 0;
+  let drawn = null;
+  let slow = 0;
+  return {
+    // Whether to draw a frame now (call once per animation frame).
+    ready(now, fps) {
+      if (tick !== null) {
+        const gap = now - tick;
+        display = gap < display ? gap : display + (gap - display) * 2e-3;
+      }
+      tick = now;
+      if (!visible || document.hidden) return false;
+      return now >= due - display / 2;
+    },
+    // Call after drawing. True once frames have kept taking well over
+    // their budget (the cap, or the screen's own rate if slower) for a
+    // while; then it starts counting afresh.
+    drew(now, fps) {
+      const interval = 1e3 / fps;
+      due = due < now - interval ? now + interval : due + interval;
+      const gap = drawn === null ? 0 : now - drawn;
+      drawn = now;
+      if (gap === 0 || gap > 1e3) return false;
+      slow = gap > Math.max(interval, display) * 1.6 ? slow + 1 : Math.max(0, slow - 1);
+      if (slow < 45) return false;
+      slow = 0;
+      return true;
+    }
+  };
+}
+
+// share.js
+var HOSTED = "https://www.kubai.design/pro-threads/";
+var CDN = "https://cdn.jsdelivr.net/gh/kubai087/pro-threads@main/embed.js";
+var GUIDE = "https://github.com/kubai087/pro-threads#embed";
+var LOCAL_ONLY = ["t", "ui", "ref", "embed", "lang"];
+var CSS3 = `
+  .tp-embed {
+    position: fixed;
+    inset: 0;
+    z-index: 1001;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .tp-embed_box {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-sizing: border-box;
+    width: min(620px, 100%);
+    padding: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: #1a1c21;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+    color: #c9ced8;
+  }
+  .tp-embed_head { display: flex; align-items: center; justify-content: space-between; }
+  .tp-embed h2 { margin: 0; color: #ffffff; font: inherit; font-size: 1.2em; }
+  .tp-embed p { margin: 0; color: #8d93a0; line-height: 1.5; }
+  .tp-embed button {
+    padding: 6px 12px;
+    border: 0;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.07);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .tp-embed button:hover { background: rgba(255, 255, 255, 0.12); }
+  .tp-embed_tabs { display: flex; gap: 4px; }
+  .tp-embed_tabs button[aria-selected="true"] { background: #c9ced8; color: #111215; }
+  .tp-embed pre {
+    margin: 0;
+    max-height: 40vh;
+    overflow: auto;
+    padding: 12px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.35);
+    color: #e6e9ef;
+    white-space: pre-wrap;
+    word-break: break-all;
+    user-select: all;
+  }
+  .tp-embed_foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .tp-embed a { color: #c9ced8; }
+  .tp-embed .tp-embed_copy { background: #ffffff; color: #111215; }
+  .tp-embed .tp-embed_copy:hover { background: #e6e9ef; }
+`;
+var attr = (value) => value.replace(/"/g, "&quot;");
+function snippets(page) {
+  const settings = new URLSearchParams(location.search);
+  LOCAL_ONLY.forEach((k) => settings.delete(k));
+  const link = new URLSearchParams(settings);
+  let scene = "pro";
+  if (page === "hero") {
+    scene = settings.get("scene") ?? "ring";
+    settings.delete("scene");
+  } else if (settings.get("view") === "az") {
+    scene = "az";
+    settings.delete("view");
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]", ""].includes(location.hostname);
+  const root = local ? HOSTED : new URL(page === "hero" ? "../" : "./", location.href).href;
+  const path = page === "hero" ? "hero/" : "";
+  const attrs = [`scene="${scene}"`];
+  if (settings.toString()) attrs.push(`settings="${attr(settings.toString())}"`);
+  if (root !== HOSTED) attrs.push(`src="${attr(root)}"`);
+  const element = `<script type="module" src="${CDN}"><\/script>
+<pro-threads ${attrs.join(" ")} style="height: 100vh"></pro-threads>`;
+  const query2 = new URLSearchParams(settings);
+  if (page === "hero") {
+    query2.set("scene", scene);
+    if (!query2.has("landing")) query2.set("landing", "0");
+  } else if (scene === "az") {
+    query2.set("view", "az");
+  }
+  query2.set("embed", "1");
+  const iframe = `<iframe src="${attr(new URL(`${path}?${query2}`, root).href)}" title="PRO Threads" loading="lazy"
+  style="display: block; width: 100%; height: 100vh; border: 0"></iframe>`;
+  const href = new URL(path + (link.toString() ? `?${link}` : ""), root).href;
+  return [["Web component", element], ["iframe", iframe], ["Link", href]];
+}
+function open(page, font) {
+  const layer = document.createElement("div");
+  layer.className = "tp-embed";
+  layer.style.font = font;
+  layer.innerHTML = `
+    <div class="tp-embed_box" role="dialog" aria-modal="true" aria-labelledby="tp-embed-title">
+      <div class="tp-embed_head"><h2 id="tp-embed-title"></h2><button class="tp-embed_close"></button></div>
+      <p class="tp-embed_lede"></p>
+      <div class="tp-embed_tabs" role="tablist"></div>
+      <pre><code></code></pre>
+      <div class="tp-embed_foot"><a target="_blank" rel="noopener" href="${GUIDE}"></a><button class="tp-embed_copy"></button></div>
+    </div>`;
+  const $ = (selector) => layer.querySelector(selector);
+  $("h2").textContent = t("Embed");
+  $(".tp-embed_close").textContent = t("Close");
+  $(".tp-embed_lede").textContent = t("Paste this where the scene should go. It fills the box you give it, with the settings you see now.");
+  $("a").textContent = t("Guide on GitHub \u2192");
+  const copy = $(".tp-embed_copy");
+  copy.textContent = t("Copy");
+  const list = snippets(page);
+  let shown = 0;
+  const show2 = (i) => {
+    shown = i;
+    $("code").textContent = list[i][1];
+    [...$(".tp-embed_tabs").children].forEach((b, j) => b.setAttribute("aria-selected", i === j));
+  };
+  list.forEach(([name], i) => {
+    const tab = document.createElement("button");
+    tab.setAttribute("role", "tab");
+    tab.textContent = t(name);
+    tab.addEventListener("click", () => show2(i));
+    $(".tp-embed_tabs").append(tab);
+  });
+  show2(0);
+  copy.addEventListener("click", async () => {
+    const text = list[shown][1];
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      getSelection().selectAllChildren($("code"));
+      return;
+    }
+    copy.textContent = t("Copied");
+    setTimeout(() => copy.textContent = t("Copy"), 1500);
+  });
+  const close2 = () => {
+    layer.remove();
+    removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") close2();
+    event.stopPropagation();
+  };
+  addEventListener("keydown", onKey, true);
+  layer.addEventListener("click", (event) => event.target === layer && close2());
+  $(".tp-embed_close").addEventListener("click", close2);
+  document.body.append(layer);
+  copy.focus();
+}
+function addEmbed(pane2, page) {
+  if (!document.querySelector("style[data-tp-embed]")) {
+    const style = document.createElement("style");
+    style.dataset.tpEmbed = "";
+    style.textContent = CSS3;
+    document.head.append(style);
+  }
+  pane2.addButton({ title: "Embed" }).on("click", () => open(page, getComputedStyle(pane2.element).font));
+}
+
+// wallpaper.js
+var canvas = document.getElementById("wall");
+var stage = document.querySelector(".stage");
+var still = number(params.get("t")) ?? null;
+var SIZE_GROUPS = {
+  Desktop: {
+    Original: [2e3, 1293, 1],
+    "16:9": [1920, 1080, 1],
+    "16:10": [2560, 1600, 1],
+    "4:3": [1600, 1200, 1],
+    "1:1": [1440, 1440, 1],
+    "3:4": [1200, 1600, 1],
+    "9:16": [1080, 1920, 1]
+  },
+  iPhone: {
+    "iPhone 17 Pro Max": [440, 956, 3],
+    "iPhone 17 / 17 Pro": [402, 874, 3],
+    "iPhone Air": [420, 912, 3],
+    "iPhone 16 Plus": [430, 932, 3],
+    "iPhone 16": [393, 852, 3],
+    "iPhone 16e": [390, 844, 3],
+    "iPhone SE": [375, 667, 2]
+  },
+  Android: {
+    "Pixel 10 Pro XL": [672, 1496, 2],
+    "Pixel 10 Pro": [640, 1428, 2],
+    "Pixel 10": [540, 1212, 2],
+    "Galaxy S25 Ultra": [720, 1560, 2],
+    "Galaxy S25": [540, 1170, 2]
+  }
+};
+var SIZES = Object.assign({}, ...Object.values(SIZE_GROUPS));
+var MAX_SIDE = 16384;
+var DEFAULTS = {
+  view: "word",
+  text: "PRO",
+  // Size: the stage's proportions; a saved PNG has them times the scale.
+  // Stretch eases the letters from keeping their proportions (0) to
+  // filling the stage across and down (1).
+  width: 2e3,
+  height: 1293,
+  scale: 1,
+  stretch: 0,
+  // Motion
+  speed: 1.6,
+  breathe: 1.5,
+  swell: 2,
+  fibrePace: 1.4,
+  paused: false,
+  // Light, fitted to the original
+  gain: 1.5,
+  density: 1,
+  texture: 1,
+  rim: 1,
+  reach: 1,
+  floorDim: 0.2,
+  floorLit: 0.52,
+  // Colour: the ramp from shadow to highlight, the glow where the light
+  // ends, the backdrop, the coloured fibres (above where they warm, then
+  // as they warm), and how warm and how many the fibres are.
+  shadow: "#1a1d24",
+  steel: "#475e7a",
+  silver: "#a3b8d1",
+  highlight: "#e6ebf2",
+  glow: "#ffad66",
+  background: "#000000",
+  fibreCool: "#38a3eb",
+  warmLight: "#fff2ad",
+  warmMid: "#f5ba29",
+  warmDeep: "#db3317",
+  warm: 0.6,
+  sparkle: 1,
+  // Shape, in the original's pixels
+  corner: 28,
+  arch: 40,
+  tip: 66,
+  // The alphabet's spacing: between letters in pixels, between rows in letter heights
+  spacing: 90,
+  rowGap: 0.22,
+  // Performance: the share of the screen's pixels drawn, and whether to
+  // lower it when frames run slow.
+  quality: (devicePixelRatio || 1) >= 2 ? 0.75 : 1,
+  autoQuality: true,
+  // The most frames drawn a second.
+  fps: 60
+};
+var EFFECTS = {
+  Original: { speed: 1.6, breathe: 1.5, swell: 2, fibrePace: 1.4, gain: 1.5, reach: 1, floorDim: 0.2, floorLit: 0.52, density: 1, texture: 1, rim: 1, warm: 0.6, sparkle: 1 },
+  Calm: { speed: 0.4, breathe: 0.6, swell: 0.5, fibrePace: 0.5, gain: 1.45, reach: 1.1, floorDim: 0.2, floorLit: 0.52, density: 1, texture: 0.9, rim: 1, warm: 0.5, sparkle: 0.7 },
+  Lively: { speed: 2.6, breathe: 2.2, swell: 2.8, fibrePace: 3, gain: 1.55, reach: 1, floorDim: 0.22, floorLit: 0.52, density: 1, texture: 1.1, rim: 1.1, warm: 0.75, sparkle: 1.3 },
+  Silk: { speed: 0.7, breathe: 1, swell: 1, fibrePace: 0.8, gain: 1.5, reach: 1.4, floorDim: 0.24, floorLit: 0.56, density: 0.7, texture: 0.4, rim: 0.6, warm: 0.5, sparkle: 0.6 },
+  "Fine Wire": { speed: 1, breathe: 1, swell: 1, fibrePace: 1, gain: 1.45, reach: 0.9, floorDim: 0.16, floorLit: 0.46, density: 2, texture: 1.6, rim: 1.5, warm: 0.6, sparkle: 1 },
+  Glow: { speed: 0.9, breathe: 1.2, swell: 1.4, fibrePace: 1, gain: 1.9, reach: 1.8, floorDim: 0.26, floorLit: 0.66, density: 1, texture: 0.9, rim: 1.6, warm: 1, sparkle: 1.2 },
+  "Low Light": { speed: 0.8, breathe: 1, swell: 1, fibrePace: 0.8, gain: 1.1, reach: 0.7, floorDim: 0.08, floorLit: 0.35, density: 1, texture: 1.1, rim: 0.8, warm: 0.4, sparkle: 0.8 }
+};
+var state = { ...DEFAULTS };
+var pick2 = (table, name) => Object.keys(table).find((k) => slug(k) === name?.toLowerCase());
+var chosen = { palette: pick2(PALETTES, params.get("palette")) ?? "XDR Blue", effect: pick2(EFFECTS, params.get("effect")) ?? "Original" };
+Object.assign(state, PALETTES[chosen.palette], EFFECTS[chosen.effect]);
+var LIMITS = {
+  width: [160, 7680],
+  height: [160, 7680],
+  scale: [1, 4],
+  stretch: [0, 1],
+  speed: [0, 4],
+  breathe: [0, 2.5],
+  swell: [0, 3],
+  fibrePace: [0, 4],
+  gain: [0.6, 2.4],
+  density: [0.4, 2.5],
+  texture: [0, 2],
+  rim: [0, 2.5],
+  reach: [0.4, 2.5],
+  floorDim: [0, 0.6],
+  floorLit: [0.1, 0.9],
+  warm: [0, 1],
+  sparkle: [0, 1.5],
+  corner: [8, 70],
+  arch: [8, 90],
+  tip: [16, 140],
+  spacing: [15, 240],
+  rowGap: [0.02, 0.6],
+  quality: [0.4, 1],
+  fps: [10, 240]
+};
+for (const [key, fallback] of Object.entries(DEFAULTS)) {
+  if (!params.has(key)) continue;
+  const raw = params.get(key);
+  if (typeof fallback === "number") state[key] = number(raw, LIMITS[key]) ?? state[key];
+  else if (typeof fallback === "boolean") state[key] = raw !== "0" && raw !== "false";
+  else if (fallback.startsWith("#")) {
+    if (/^#?[0-9a-f]{6}$/i.test(raw)) state[key] = raw.startsWith("#") ? raw : `#${raw}`;
+  } else state[key] = raw;
+}
+if (params.get("view") === "az") state.view = "alphabet";
+if (calm) state.paused = true;
+if (params.get("ui") === "0") document.body.dataset.ui = "off";
+var reference = document.querySelector(".reference");
+function showReference(on) {
+  if (on && !reference.src) reference.src = "./reference.webp";
+  document.body.toggleAttribute("data-reference", on);
+}
+if (params.has("ref")) {
+  showReference(true);
+  reference.style.opacity = params.get("ref");
+}
+var rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+var gl = getGL(canvas, { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: still !== null });
+function compile(type, source) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, source);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fail(`a shader did not compile: ${gl.getShaderInfoLog(s)}`);
+  return s;
+}
+var program = gl.createProgram();
+gl.attachShader(program, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(program, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) fail(`the shaders did not link: ${gl.getProgramInfoLog(program)}`);
+gl.useProgram(program);
+var quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+var aPos = gl.getAttribLocation(program, "aPos");
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+var u = {};
+var count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
+for (let i = 0; i < count; i++) {
+  const name = gl.getActiveUniform(program, i).name.replace(/\[0\]$/, "");
+  u[name] = gl.getUniformLocation(program, name);
+}
+var sheetTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, sheetTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.uniform1i(u.uSheetTex, 0);
+var layout = { width: 1, height: 1 };
+function relayout() {
+  const alphabet = state.view === "alphabet";
+  const text = [...state.text || " "].slice(0, MAX_LETTERS).join("");
+  const shape2 = {
+    corner: state.corner,
+    arch: state.arch,
+    tip: state.tip,
+    gap: alphabet ? state.spacing : 15,
+    rowGap: alphabet ? state.rowGap : 0
+  };
+  layout = pack(alphabet ? ALPHABET : [text], shape2);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEXELS, MAX_CELLS, 0, gl.RGBA, gl.FLOAT, layout.data);
+  gl.uniform4fv(u.uRows, layout.rows);
+  gl.uniform1i(u.uRowCount, layout.nRows);
+  gl.uniform1f(u.uRowPitch, layout.rowPitch);
+  gl.uniform1f(u.uCell, CELL);
+  gl.uniform1f(u.uGap, shape2.gap / 1293);
+  document.body.dataset.view = state.view;
+  placeLetters();
+}
+function placeLetters(pixels = canvas.height) {
+  const aspect = state.width / state.height;
+  const fit = Math.min(1, aspect / layout.width, 1 / layout.height);
+  const t2 = state.stretch;
+  const sx = fit ** (1 - t2) * (aspect / layout.width) ** t2;
+  const sy = fit ** (1 - t2) * (1 / layout.height) ** t2;
+  gl.uniform1f(u.uAspect, aspect);
+  gl.uniform4f(u.uFrame, (aspect - layout.width * sx) / 2, (1 - layout.height * sy) / 2, sx, sy);
+  gl.uniform2f(u.uPx, 1 / (pixels * sx), 1 / (pixels * sy));
+}
+function outputSize() {
+  const scale = Math.min(state.scale, MAX_SIDE / Math.max(state.width, state.height));
+  return [Math.round(state.width * scale), Math.round(state.height * scale)];
+}
+function setUniforms() {
+  gl.uniform1f(u.uDensity, state.density);
+  gl.uniform1f(u.uWarm, state.warm);
+  gl.uniform1f(u.uGain, state.gain);
+  gl.uniform1f(u.uSparkle, state.sparkle);
+  gl.uniform4f(u.uMotion, state.breathe, state.swell, state.texture, state.rim);
+  gl.uniform4f(u.uShape, 0.285 * state.reach, 0.144 * state.reach, state.floorDim, state.floorLit);
+  gl.uniform2f(u.uEnd, 0.152, 0.35);
+  gl.uniform4f(u.uFall, 1.3, 1.17, 0.84, 0.69);
+  const shadow = rgb(state.shadow);
+  gl.uniform3fv(u.uRamp, [
+    ...shadow.map((c) => c * 0.16),
+    ...shadow,
+    ...rgb(state.steel),
+    ...rgb(state.silver),
+    ...rgb(state.highlight)
+  ]);
+  gl.uniform3fv(u.uGlow, rgb(state.glow));
+  gl.uniform3fv(u.uFibreCool, rgb(state.fibreCool));
+  gl.uniform3fv(u.uFibreWarm, [...rgb(state.warmLight), ...rgb(state.warmMid), ...rgb(state.warmDeep)]);
+  gl.uniform3fv(u.uBg, rgb(state.background));
+  document.body.style.setProperty("--backdrop", state.background);
+}
+function resize() {
+  if (embedded) {
+    const box2 = stage.parentElement.getBoundingClientRect();
+    state.width = Math.max(1, Math.round(box2.width));
+    state.height = Math.max(1, Math.round(box2.height));
+  }
+  stage.style.setProperty("--ratio", state.width / state.height);
+  const box = stage.getBoundingClientRect();
+  const density = (devicePixelRatio || 1) * state.quality;
+  canvas.width = Math.max(1, Math.round(box.width * density));
+  canvas.height = Math.max(1, Math.round(box.height * density));
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  placeLetters();
+  stats.resolution = `${canvas.width} \xD7 ${canvas.height}`;
+  dirty = true;
+  if (still !== null) draw();
+}
+var lightClock = still ?? 0;
+var fibreClock = still ?? 0;
+var dirty = true;
+function draw() {
+  if (gl.isContextLost()) return;
+  gl.uniform1f(u.uTime, lightClock);
+  gl.uniform1f(u.uFibreTime, fibreClock);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  glassPass();
+  dirty = false;
+  window.__wallDrawn = true;
+}
+var stats = { fps: 0, resolution: "", output: "" };
+var pacer = createPacer(canvas);
+var last = null;
+var frames = 0;
+var since = 0;
+function frame(now) {
+  if (glassSkipFrame()) {
+    glass.asleep = true;
+    last = null;
+    return;
+  }
+  requestAnimationFrame(frame);
+  const dt = last === null ? 0 : Math.min(0.1, (now - last) / 1e3);
+  last = now;
+  if (!state.paused) {
+    lightClock += dt * state.speed;
+    fibreClock += dt * state.speed * state.fibrePace;
+  }
+  if (state.paused && !dirty || !pacer.ready(now, state.fps)) return;
+  draw();
+  const struggling = pacer.drew(now, state.fps);
+  frames++;
+  if (now - since >= 500) {
+    stats.fps = Math.round(frames * 1e3 / (now - since));
+    frames = 0;
+    since = now;
+  }
+  if (struggling && state.autoQuality && !state.paused && state.quality > 0.5) {
+    state.quality = Math.max(0.5, Math.round((state.quality - 0.1) * 100) / 100);
+    resize();
+    pane.refresh();
+  }
+}
+function savePng() {
+  const [width, height] = outputSize();
+  const tile = Math.min(4096, gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
+  const out = document.createElement("canvas");
+  out.width = width;
+  out.height = height;
+  const ctx = out.getContext("2d");
+  placeLetters(height);
+  for (let y = 0; y < height; y += tile) {
+    for (let x = 0; x < width; x += tile) {
+      canvas.width = Math.min(tile, width - x);
+      canvas.height = Math.min(tile, height - y);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.uniform4f(u.uTile, x / width, y / height, canvas.width / width, canvas.height / height);
+      draw();
+      ctx.drawImage(canvas, x, y);
+    }
+  }
+  gl.uniform4f(u.uTile, 0, 0, 1, 1);
+  const name = preset.size === "Custom" ? "" : `${preset.size.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-`;
+  out.toBlob((blob) => {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `pro-threads-${name}${width}x${height}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1e3);
+  });
+  resize();
+}
+var pane = await createPane({ container: document.querySelector(".sidebar"), title: "PRO Threads" });
+var tabs = pane.addTab({ pages: [{ title: "PRO" }, { title: "A\u2013Z" }, { title: "Shapes" }] });
+tabs.pages[0].addBinding(state, "text", { label: "Text" }).on("change", () => {
+  state.text = [...state.text.toUpperCase()].slice(0, MAX_LETTERS).join("");
+  pane.refresh();
+});
+tabs.pages[1].addBinding(state, "spacing", { label: "Spacing", min: 15, max: 240, step: 1 });
+tabs.pages[1].addBinding(state, "rowGap", { label: "Row gap", min: 0.02, max: 0.6, step: 0.01 });
+tabs.pages[state.view === "alphabet" ? 1 : 0].selected = true;
+tabs.on("select", (event) => {
+  if (event.index === 2) {
+    location.href = pageUrl("hero", "hero/", {
+      palette: chosen.palette === "XDR Blue" ? null : slug(chosen.palette),
+      lang: language.value === "zh" ? "zh" : null
+    });
+    return;
+  }
+  state.view = event.index === 1 ? "alphabet" : "word";
+  relayout();
+  remember();
+  dirty = true;
+});
+var presets = pane.addFolder({ title: "Presets" });
+menu(presets.addBinding(chosen, "palette", {
+  label: "Palette",
+  options: Object.fromEntries(Object.keys(PALETTES).map((k) => [k, k]))
+}).on("change", (event) => {
+  Object.assign(state, PALETTES[event.value]);
+  pane.refresh();
+}));
+menu(presets.addBinding(chosen, "effect", {
+  label: "Effect",
+  options: Object.fromEntries(Object.keys(EFFECTS).map((k) => [k, k]))
+}).on("change", (event) => {
+  Object.assign(state, EFFECTS[event.value]);
+  pane.refresh();
+}));
+var size = pane.addFolder({ title: "Size" });
+var preset = { size: "Custom" };
+var fits = (key) => SIZES[key]?.[0] === state.width && SIZES[key]?.[1] === state.height;
+var presetOf = () => fits(preset.size) ? preset.size : Object.keys(SIZES).find(fits) ?? "Custom";
+preset.size = presetOf();
+var presetBinding = size.addBinding(preset, "size", {
+  label: "Preset",
+  options: Object.fromEntries([...Object.keys(SIZES), "Custom"].map((k) => [k, k]))
+}).on("change", (event) => {
+  if (!SIZES[event.value]) return;
+  [state.width, state.height, state.scale] = SIZES[event.value];
+  pane.refresh();
+});
+menu(presetBinding, {
+  groups: Object.entries(SIZE_GROUPS).map(([title, sizes]) => ({ title, keys: Object.keys(sizes) })),
+  detail: (key) => SIZES[key] && `${SIZES[key][0] * SIZES[key][2]} \xD7 ${SIZES[key][1] * SIZES[key][2]}`
+});
+size.addBinding(state, "width", { label: "Width", min: 160, max: 7680, step: 1 });
+size.addBinding(state, "height", { label: "Height", min: 160, max: 7680, step: 1 });
+size.addBinding(state, "scale", {
+  label: "Scale",
+  view: "radiogrid",
+  groupName: "scale",
+  size: [4, 1],
+  cells: (x) => ({ title: `${x + 1}\xD7`, value: x + 1 })
+});
+size.addBinding(state, "stretch", { label: "Stretch", min: 0, max: 1, step: 0.01 });
+size.addBinding(stats, "output", { label: "PNG", readonly: true, interval: 200 });
+size.addButton({ title: "Save PNG" }).on("click", savePng);
+var motion = pane.addFolder({ title: "Motion" });
+motion.addBinding(state, "speed", { label: "Speed", min: 0, max: 4, step: 0.01 });
+motion.addBinding(state, "breathe", { label: "Breathing", min: 0, max: 2.5, step: 0.01 });
+motion.addBinding(state, "swell", { label: "Swell", min: 0, max: 3, step: 0.01 });
+motion.addBinding(state, "fibrePace", { label: "Fibre pace", min: 0, max: 4, step: 0.01 });
+motion.addBinding(state, "paused", { label: "Paused" });
+var light = pane.addFolder({ title: "Light", expanded: false });
+light.addBinding(state, "gain", { label: "Brightness", min: 0.6, max: 2.4, step: 0.01 });
+light.addBinding(state, "reach", { label: "Reach", min: 0.4, max: 2.5, step: 0.01 });
+light.addBinding(state, "floorDim", { label: "Dim side", min: 0, max: 0.6, step: 0.01 });
+light.addBinding(state, "floorLit", { label: "Lit side", min: 0.1, max: 0.9, step: 0.01 });
+light.addBinding(state, "density", { label: "Threads", min: 0.4, max: 2.5, step: 0.01 });
+light.addBinding(state, "texture", { label: "Texture", min: 0, max: 2, step: 0.01 });
+light.addBinding(state, "rim", { label: "Edge rim", min: 0, max: 2.5, step: 0.01 });
+var colour = pane.addFolder({ title: "Colour", expanded: false });
+colour.addBinding(state, "shadow", { label: "Shadow" });
+colour.addBinding(state, "steel", { label: "Steel" });
+colour.addBinding(state, "silver", { label: "Silver" });
+colour.addBinding(state, "highlight", { label: "Highlight" });
+colour.addBinding(state, "glow", { label: "Edge glow" });
+colour.addBinding(state, "fibreCool", { label: "Fibre cool" });
+colour.addBinding(state, "warmLight", { label: "Fibre warm 1" });
+colour.addBinding(state, "warmMid", { label: "Fibre warm 2" });
+colour.addBinding(state, "warmDeep", { label: "Fibre warm 3" });
+colour.addBinding(state, "background", { label: "Background" });
+colour.addBinding(state, "warm", { label: "Warmth", min: 0, max: 1, step: 0.01 });
+colour.addBinding(state, "sparkle", { label: "Fibres", min: 0, max: 1.5, step: 0.01 });
+colour.children.filter((b) => b.element.querySelector("select")).forEach((b) => menu(b));
+var shape = pane.addFolder({ title: "Shape", expanded: false });
+shape.addBinding(state, "corner", { label: "Corner", min: 8, max: 70, step: 1 });
+shape.addBinding(state, "arch", { label: "Arch", min: 8, max: 90, step: 1 });
+shape.addBinding(state, "tip", { label: "Tip", min: 16, max: 140, step: 1 });
+var perf = pane.addFolder({ title: "Performance", expanded: false });
+perf.addBinding(state, "quality", { label: "Resolution", min: 0.4, max: 1, step: 0.05 });
+perf.addBinding(state, "autoQuality", { label: "Auto" });
+perf.addBinding(state, "fps", {
+  label: "Frame rate",
+  view: "radiogrid",
+  groupName: "fps",
+  size: [3, 1],
+  cells: (x) => ({ title: String([30, 60, 120][x]), value: [30, 60, 120][x] })
+});
+perf.addBinding(stats, "fps", { label: "FPS", readonly: true, view: "graph", min: 0, max: 130, interval: 500 });
+perf.addBinding(stats, "resolution", { label: "Pixels", readonly: true, interval: 500 });
+addEmbed(pane, "wallpaper");
+pane.addButton({ title: "Reset" }).on("click", () => {
+  Object.assign(state, DEFAULTS, { view: state.view });
+  preset.size = presetOf();
+  chosen.palette = "XDR Blue";
+  chosen.effect = "Original";
+  pane.refresh();
+});
+addLanguage(pane);
+var LAYOUT = /* @__PURE__ */ new Set(["text", "spacing", "rowGap", "corner", "arch", "tip"]);
+var SIZE = /* @__PURE__ */ new Set(["width", "height", "quality"]);
+pane.on("change", (event) => {
+  const key = event.target.key;
+  if (LAYOUT.has(key)) relayout();
+  if (SIZE.has(key)) {
+    preset.size = presetOf();
+    presetBinding.refresh();
+    resize();
+  }
+  if (key === "stretch") placeLetters();
+  stats.output = outputSize().join(" \xD7 ");
+  setUniforms();
+  remember();
+  dirty = true;
+});
+function remember() {
+  const base = { ...DEFAULTS, ...PALETTES[chosen.palette], ...EFFECTS[chosen.effect] };
+  const settings = [];
+  if (state.view === "alphabet") settings.push(["view", "az"]);
+  if (chosen.palette !== "XDR Blue") settings.push(["palette", slug(chosen.palette)]);
+  if (chosen.effect !== "Original") settings.push(["effect", slug(chosen.effect)]);
+  for (const key of Object.keys(DEFAULTS)) {
+    if (key === "view" || state[key] === base[key]) continue;
+    if (key === "quality" && state.autoQuality) continue;
+    settings.push([key, format(state[key])]);
+  }
+  if (language.value === "zh") settings.push(["lang", "zh"]);
+  save("wallpaper", settings);
+}
+addEventListener("keydown", (event) => {
+  if (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA") return;
+  if (event.metaKey || event.ctrlKey || event.altKey || embedded) return;
+  if (event.key === "h" || event.key === "H") {
+    document.body.dataset.ui = document.body.dataset.ui === "off" ? "on" : "off";
+  }
+  if (event.key === "r" || event.key === "R") showReference(!document.body.hasAttribute("data-reference"));
+  if (event.key === " ") {
+    state.paused = !state.paused;
+    pane.refresh();
+    event.preventDefault();
+  }
+});
+gl.uniform4f(u.uTile, 0, 0, 1, 1);
+stats.output = outputSize().join(" \xD7 ");
+setUniforms();
+relayout();
+remember();
+new ResizeObserver(resize).observe(stage.parentElement);
+resize();
+draw();
+announce();
+if (still === null) requestAnimationFrame(frame);
+window.__wall = { state, draw, pane };
+
+// glass.js
+// Liquid Glass for the taskbar, drawn into the wallpaper itself: the dock and
+// tray pills refract the threads behind them. Windows' compositor can't bend
+// what's behind a window, but the wallpaper is the only thing ever behind the
+// taskbar, so the glass is rendered here and the taskbar itself is transparent.
+//
+// A helper (dockglass/DockGlass.cs) writes geometry.js next to this page with the pills'
+// screen rectangles and whether the desktop is visible; it's polled below.
+
+// Physical pixels at 100% scaling; multiplied by the display scale.
+var GLASS_LOOK = {
+  bezel: 16,        // width of the curved rim
+  thickness: 20,    // glass height; how far the rim bends the background
+  specular: 0,      // light on the rim facing the top-left (off: it reads as an outline)
+  dim: 0.16,        // darkens only bright content behind, so white icons stay readable
+  bodyTop: 0.16,    // the glass's own body: light catching the top, fading downward
+  bodyBottom: 0.02,
+  rimGlow: 0.07,    // light gathering in the curved rim, fading inward (no line)
+  tint: [0.74, 0.84, 1.0], // cool steel blue, matching the XDR Blue threads
+};
+
+var GLASS_VERT = `#version 300 es
+in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+var GLASS_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uStrip;
+uniform vec2 uStripSize;
+uniform vec4 uRect[2];
+uniform float uRadius[2];
+uniform int uCount;
+uniform float uK;
+uniform vec4 uLook;
+uniform vec3 uBody;
+uniform vec3 uTint;
+out vec4 outColor;
+
+float sdRoundRect(vec2 p, vec4 r, float rad) {
+  vec2 q = abs(p - (r.xy + r.zw * 0.5)) - (r.zw * 0.5 - rad);
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
+}
+
+vec3 strip(vec2 p) {
+  return texture(uStrip, clamp(p, vec2(0.5), uStripSize - 0.5) / uStripSize).rgb;
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy;
+  float sd = 1e9;
+  vec4 rect = vec4(0.0);
+  float rad = 0.0;
+  for (int i = 0; i < 2; i++) {
+    if (i >= uCount) break;
+    float s = sdRoundRect(p, uRect[i], uRadius[i]);
+    if (s < sd) { sd = s; rect = uRect[i]; rad = uRadius[i]; }
+  }
+  if (sd > 1.0) discard;
+
+  // Outward direction of the rim at this pixel.
+  const float e = 0.5;
+  vec2 g = vec2(sdRoundRect(p + vec2(e, 0.0), rect, rad) - sdRoundRect(p - vec2(e, 0.0), rect, rad),
+                sdRoundRect(p + vec2(0.0, e), rect, rad) - sdRoundRect(p - vec2(0.0, e), rect, rad));
+  g = normalize(g + 1e-6);
+
+  // Convex squircle rim: height h(x) = (1 - (1 - x)^4)^(1/4), x from 0 at the
+  // edge to 1 where the flat top starts.
+  float bezel = uLook.x * uK;
+  float thick = uLook.y * uK;
+  float x = clamp(max(-sd, 0.0) / bezel, 0.0, 1.0);
+  float a = 1.0 - x;
+  float a4 = a * a * a * a;
+  float h = pow(max(1.0 - a4, 0.0), 0.25);
+  float slope = min(a * a * a * pow(max(1.0 - a4, 1e-4), -0.75), 6.0);
+  vec3 n = normalize(vec3(g * (thick / bezel) * slope, 1.0));
+
+  // Snell's law, a slightly different index per channel for dispersion.
+  vec3 eta = vec3(1.0 / 1.47, 1.0 / 1.5, 1.0 / 1.54);
+  vec3 col;
+  for (int c = 0; c < 3; c++) {
+    vec3 r = refract(vec3(0.0, 0.0, -1.0), n, eta[c]);
+    col[c] = strip(p + r.xy / max(-r.z, 0.15) * thick * h)[c];
+  }
+
+  // Light from the top-left, spread over the whole rim (no hard line), and a
+  // fainter bounce on the opposite rim.
+  float facing = dot(g, normalize(vec2(-0.55, 0.85)));
+  float rim = a * a;
+  col += uLook.z * rim * (max(facing, 0.0) + 0.35 * max(-facing, 0.0));
+  col *= 1.0 - uLook.w * dot(col, vec3(0.2126, 0.7152, 0.0722));
+
+  // The glass's own body, lit from above, plus light gathering in the curved
+  // rim and fading inward, so the pill reads as glass even over black without
+  // any edge line.
+  float up = clamp((p.y - rect.y) / rect.w, 0.0, 1.0);
+  col = mix(col, uTint, mix(uBody.y, uBody.x, up));
+  col += uTint * uBody.z * a * a * a * mix(0.55, 1.0, up);
+
+  float cover = clamp(0.5 - sd, 0.0, 1.0);
+  outColor = vec4(mix(strip(p), col, cover), 1.0);
+}`;
+
+function glassShader(type, source) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, source);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.warn(`glass shader: ${gl.getShaderInfoLog(s)}`);
+    return null;
+  }
+  return s;
+}
+
+// A broken glass shader must never take the wallpaper down with it.
+function createGlass() {
+  const vs = glassShader(gl.VERTEX_SHADER, GLASS_VERT);
+  const fs = glassShader(gl.FRAGMENT_SHADER, GLASS_FRAG);
+  if (!vs || !fs) return null;
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.bindAttribLocation(prog, aPos, "aPos");
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.warn(`glass program: ${gl.getProgramInfoLog(prog)}`);
+    return null;
+  }
+  const loc = {};
+  for (const name of ["uStrip", "uStripSize", "uRect", "uRadius", "uCount", "uK", "uLook", "uBody", "uTint"]) loc[name] = gl.getUniformLocation(prog, name);
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.useProgram(prog);
+  gl.uniform1i(loc.uStrip, 1);
+  gl.useProgram(program);
+  return { prog, loc, tex, texW: 0, texH: 0, target: null, cur: null, screen: [1920, 1080], dpi: 1, mode: "visible", rev: -1, last: 0 };
+}
+
+// Copies the strip behind the taskbar and redraws the pills as glass over it.
+function glassPass() {
+  if (!glass || still !== null || !glass.target || !glass.target.length || glass.mode === "hidden") return;
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - (glass.last || now)) / 1e3);
+  glass.last = now;
+
+  // Ease toward the dock's real size when apps open or close; snap otherwise.
+  const snap = !glass.cur || glass.cur.length !== glass.target.length || glass.mode !== "visible";
+  const f = 1 - Math.exp(-dt / 0.06);
+  glass.cur = snap ? glass.target.map((r) => r.slice()) : glass.cur.map((r, i) => r.map((v, j) => v + (glass.target[i][j] - v) * f));
+
+  const k = canvas.width / glass.screen[0];
+  const rects = [0, 0, 0, 0, 0, 0, 0, 0];
+  const radii = [0, 0];
+  let top = 0, left = Infinity, right = 0;
+  glass.cur.slice(0, 2).forEach(([x, y, w, h], i) => {
+    const X = x * k, Y = canvas.height - (y + h) * k, W = w * k, H = h * k;
+    rects.splice(i * 4, 4, X, Y, W, H);
+    radii[i] = Math.min(H / 2, 16 * glass.dpi * k);
+    top = Math.max(top, Y + H);
+    left = Math.min(left, X);
+    right = Math.max(right, X + W);
+  });
+  const stripH = Math.min(canvas.height, Math.ceil(top + 48 * glass.dpi * k));
+
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, glass.tex);
+  if (glass.texW !== canvas.width || glass.texH !== stripH) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, stripH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    glass.texW = canvas.width;
+    glass.texH = stripH;
+  }
+  gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, canvas.width, stripH);
+
+  const { loc } = glass;
+  gl.useProgram(glass.prog);
+  gl.uniform2f(loc.uStripSize, canvas.width, stripH);
+  gl.uniform4fv(loc.uRect, rects);
+  gl.uniform1fv(loc.uRadius, radii);
+  gl.uniform1i(loc.uCount, Math.min(2, glass.cur.length));
+  gl.uniform1f(loc.uK, k);
+  gl.uniform4f(loc.uLook, GLASS_LOOK.bezel * glass.dpi, GLASS_LOOK.thickness * glass.dpi, GLASS_LOOK.specular, GLASS_LOOK.dim);
+  gl.uniform3f(loc.uBody, GLASS_LOOK.bodyTop, GLASS_LOOK.bodyBottom, GLASS_LOOK.rimGlow);
+  gl.uniform3fv(loc.uTint, GLASS_LOOK.tint);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(Math.floor(left) - 2, 0, Math.ceil(right - left) + 4, Math.ceil(top) + 2);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.useProgram(program);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+// While a window covers the desktop only the strip behind the taskbar shows,
+// so the frame loop stops and a frame is drawn only when the dock changes size.
+function glassSkipFrame() {
+  return !!glass && glass.mode !== "visible";
+}
+
+var glass = createGlass();
+window.__glassLook = GLASS_LOOK;
+
+window.__glassUpdate = (g) => {
+  if (!glass || !g || g.rev === glass.rev) return;
+  glass.rev = g.rev;
+  glass.screen = g.screen;
+  glass.dpi = g.dpi || 1;
+  glass.mode = g.mode || "visible";
+  glass.target = [g.dock, g.tray].filter(Boolean);
+  if (glass.mode === "covered") draw();
+  if (glass.mode === "visible" && glass.asleep) {
+    glass.asleep = false;
+    requestAnimationFrame(frame);
+  }
+};
+
+setInterval(() => {
+  const s = document.createElement("script");
+  s.src = `geometry.js?${Date.now()}`;
+  s.onload = s.onerror = () => s.remove();
+  document.head.appendChild(s);
+}, 250);
+
+
+</script>
+</body>
+</html>
